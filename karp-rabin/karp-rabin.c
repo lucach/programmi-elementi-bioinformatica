@@ -94,32 +94,117 @@ static uint32_t next_h(uint32_t f, const char out, const char in, const uint32_t
         return ((4 * (f - corrections[ctoi(out)]) % mod) + ctoi(in)) % mod;
 }
 
-static char* read_text(char* filename) {
+/*
+ * Parses the given file which may be either in FASTA or FASTQ format.
+ * Moreover, automatically does the extraction only if it is gz-compressed.
+ * Returns a (pointer to a) kseq structure, holding all the information
+ * extracted from the file.
+ */
+
+static kseq_t* parse_file(char* filename) {
         gzFile fp;
         kseq_t *seq;
         fp = gzopen(filename, "r");
-        assert(fp != NULL && "Could not open fasta file\n");
+        assert(fp != NULL && "Could not open FASTA/Q file\n");
         seq = kseq_init(fp);
         int res = kseq_read(seq);
         assert(res >= 0);
         gzclose(fp);
-        return seq->seq.s;
-        // kseq_destroy(seq);
+        return seq;
+}
+
+/*
+ * Given a text and a string representing the reading quality of the bases in
+ * the text, returns a new text without bases whose associated quality is
+ * below a given threshold (min_quality).
+ * Quality scores are interpreted as Phred-33 scores.
+ */
+
+static char* filter_text(char* text, uint32_t length, char* quality, uint8_t min_quality) {
+    // Keep track of the length of the new filtered text.
+    uint32_t new_l = 0;
+
+    // Allocate memory to potentally hold all the bases. Include the NULL
+    // terminator in the length and initialize everything to zero.
+    char* new_text = (char*) calloc(length + 1, sizeof(char));
+    assert(new_text != NULL);
+
+    // Copy only the bases having a quality score which is at least
+    // min_quality.
+    for (uint32_t i = 0; i < length; i++) {
+        uint8_t phred_value = *(quality + i) - 33;
+        if (phred_value >= min_quality) {
+            *(new_text + new_l) = *(text + i);
+            new_l++;
+        }
+    }
+
+    // Reallocate the text, possibly contracting the occupied memory if the
+    // new text is shorter than the original one.
+    new_text = realloc(new_text, (new_l + 1) * sizeof(char));
+    assert(new_text != NULL);
+
+    return new_text;
 }
 
 int main(int argc, char **argv) {
         static struct gengetopt_args_info args_info;
         assert(cmdline_parser(argc, argv, &args_info) == 0);
-        char* pattern = args_info.pattern_orig;
-        char* text = read_text(args_info.text_arg);
-        uint32_t n = strlen(text);
-        uint32_t m = strlen(pattern);
+
+        char *text, *pattern;
+        uint32_t n, m;
+        // The pattern may be specified directly as a string o indirectly as
+        // a FASTA/Q file. The heuristic tries to open a file and fallbacks to
+        // use the string directly in case the file does not exists.
+        gzFile fp = gzopen(args_info.pattern_arg, "r");
+        if (fp == NULL && errno == ENOENT) {
+            // The file does not exists, thus we assume that the pattern
+            // has been directly specified.
+            pattern = args_info.pattern_orig;
+            m = strlen(pattern);
+        }
+        else {
+            assert(fp != NULL && "Error opening pattern file\n");
+            // Close the file that was opened before. This is not mandatory,
+            // but reading from an already open file is implementation-defined
+            // behaviour.
+            gzclose(fp);
+            kseq_t* pattern_seq = parse_file(args_info.pattern_arg);
+            m = pattern_seq->seq.l;
+            pattern = (char*) calloc(m + 1, sizeof(char));
+            assert(pattern != NULL);
+            strcpy(pattern, pattern_seq->seq.s);
+            kseq_destroy(pattern_seq);
+        }
+
+        // On the other hand, the text *must* be given as a FASTA/Q file.
+        kseq_t* seq = parse_file(args_info.text_arg);
+        n = seq->seq.l;
+        text = (char*) calloc(n + 1, sizeof(char));
+        assert(text != NULL);
+        strcpy(text, seq->seq.s);
+
+        if (args_info.min_quality_given) {
+            uint8_t min_quality = args_info.min_quality_arg;
+            char* quality_s = seq->qual.s;
+            assert(quality_s != NULL && "text is not in FASTQ format\n");
+            char* new_text = filter_text(text, n, quality_s, min_quality);
+            // Careful memory handling: free the old text and make text point
+            // to the new location.
+            free(text);
+            text = new_text;
+            n = strlen(text);
+        }
+
+        kseq_destroy(seq);
+
         /* occ[] stores if a position is an occurrence */
         uint32_t* occ = calloc(n, sizeof(*occ));
         assert(occ != NULL);
 
         /* Initialize random number generator */
         gsl_rng *rng = gsl_rng_alloc(gsl_rng_mt19937);
+        assert(rng != NULL);
         uint32_t num_rounds = (size_t) args_info.rounds_arg;
         for (size_t i = 0; i < num_rounds; i++) {
                 uint32_t mod = random_prime(rng);
@@ -138,5 +223,10 @@ int main(int argc, char **argv) {
                         char* x = strndupa(text + pos, m);
                         printf("Occurrence %s at position %d\n", x, pos);
                 }
+
+        // Properly free memory.
         free(occ);
+        free(text);
+        gsl_rng_free(rng);
+        cmdline_parser_free(&args_info);
 }

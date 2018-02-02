@@ -1,5 +1,5 @@
 package "karp-rabin"
-version "0.1.0"
+version "0.2.0"
 description "Implementation of the Karp-Rabin algorithm"
 args "--unamed-opts"
 
@@ -7,6 +7,7 @@ args "--unamed-opts"
 option  "text"		t "Text file"			string	typestr="filename"
 option  "pattern"	p "Pattern"			string  typestr="pattern"
 option 	"rounds" 	r "Number of rounds to eliminate false positive" 	int optional default="1"
+option 	"min-quality" 	q "Minimum Phred-33 quality of bases (requires FASTQ)" 	int optional
 details="\n
-The text file is in FASTA format.\n
+The text file is in FASTA/FASTQ (optionally gz-compressed) format.\n
 ---------------------------\n"
